@@ -1,0 +1,97 @@
+name: Build and publish stormpy nightly wheels
+
+on:
+  schedule:
+    - cron: "0 2 * * *"   # nightly at 02:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write  # required to push gh-pages
+  pages: write
+  id-token: write
+
+env:
+  STORMPY_BASE_VERSION: 1.12.1
+  RETENTION_DAYS: 14
+
+jobs:
+  compute-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Compute nightly version
+        id: version
+        run: |
+          DATE=$(date -u +%Y%m%d)
+          echo "version=${STORMPY_BASE_VERSION}.dev${DATE}" >> "$GITHUB_OUTPUT"
+
+  build-wheels:
+    needs: compute-version
+    uses: stormchecker/stormpy/.github/workflows/create_wheel.yml@master
+    with:
+      storm_version: master
+      version: ${{ needs.compute-version.outputs.version }}
+      dev_version: true
+
+  publish:
+    name: Publish nightly wheels
+    needs: build-wheels
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout gh-pages
+        uses: actions/checkout@v6
+        with:
+          ref: gh-pages
+          path: gh-pages
+      - name: Download built wheels
+        uses: actions/download-artifact@v8
+        with:
+          path: wheelhouse
+      - name: Add new nightly wheels
+        run: |
+          mkdir -p gh-pages/simple/stormpy
+          find wheelhouse -name "*.whl" -exec cp {} gh-pages/simple/stormpy/ \;
+      - name: Prune old nightly wheels (keep last 14 days)
+        run: |
+          python - <<'EOF'
+          from pathlib import Path
+          from datetime import date, timedelta
+          import os
+          import re
+          
+          # Read retention window from GitHub environment variable
+          retention_days = int(os.environ.get("RETENTION_DAYS", "14"))
+          cutoff = date.today() - timedelta(days=retention_days)
+          # Pattern matches .devYYYYMMDD
+          pattern = re.compile(r"\.dev(\d{8})")
+          
+          for p in Path("gh-pages/simple/stormpy").glob("*.whl"):
+              m = pattern.search(p.name)
+              if not m:
+                  continue
+              y, mth, d = int(m.group(1)[:4]), int(m.group(1)[4:6]), int(m.group(1)[6:])
+              if date(y, mth, d) < cutoff:
+                  p.unlink()
+          EOF
+      - name: Regenerate index
+        run: |
+          python - <<'EOF'
+          from pathlib import Path
+          
+          pkgdir = Path("gh-pages/simple/stormpy")
+          wheels = sorted(p.name for p in pkgdir.glob("*.whl"))
+          with (pkgdir / "index.html").open("w") as f:
+              f.write("<!DOCTYPE html>\n<html><body>\n")
+              for w in wheels:
+                  f.write(f'<a href="{w}">{w}</a><br/>\n')
+              f.write("</body></html>\n")
+          EOF
+      - name: Deploy to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: gh-pages
+          force_orphan: true
