@@ -33,6 +33,8 @@ jobs:
       storm_version: master
       version: ${{ needs.compute-version.outputs.version }}
       dev_version: true
+      repo: stormchecker/stormpy
+      ref: master
 
   publish:
     name: Publish nightly wheels
