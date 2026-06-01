@@ -11,7 +11,6 @@ permissions:
   id-token: write
 
 env:
-  STORMPY_BASE_VERSION: 1.12.1
   RETENTION_DAYS: 14
 
 jobs:
@@ -20,11 +19,36 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
+      - name: Checkout stormpy
+        uses: actions/checkout@v6
+        with:
+          repository: stormchecker/stormpy
+          ref: master
+          path: stormpy-version
+          fetch-depth: 1
+          sparse-checkout: |
+              lib/stormpy/_version.py
+
+      - name: Extract base version
+        id: base
+        run: |
+          BASE_VERSION=$(python - << 'EOF'
+          from pathlib import Path
+          import re
+
+          content = Path("stormpy-version/lib/stormpy/_version.py").read_text()
+          print(re.search(r'__version__\s*=\s*"([^"]+)"', content).group(1))
+          EOF
+          )
+          echo "Base version: $BASE_VERSION"
+          echo "base_version=$BASE_VERSION" >> "$GITHUB_OUTPUT"
+
       - name: Compute nightly version
         id: version
         run: |
           DATE=$(date -u +%Y%m%d)
-          echo "version=${STORMPY_BASE_VERSION}.dev${DATE}" >> "$GITHUB_OUTPUT"
+          echo "Stormpy version: ${{ steps.base.outputs.base_version }}.dev${DATE}"
+          echo "version=${{ steps.base.outputs.base_version }}.dev${DATE}" >> "$GITHUB_OUTPUT"
 
   build-wheels:
     needs: compute-version
@@ -33,6 +57,8 @@ jobs:
       storm_version: master
       version: ${{ needs.compute-version.outputs.version }}
       dev_version: true
+      repo: stormchecker/stormpy
+      ref: master
 
   publish:
     name: Publish nightly wheels
