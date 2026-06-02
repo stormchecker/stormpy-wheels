@@ -56,7 +56,7 @@ jobs:
     with:
       storm_version: master
       version: ${{ needs.compute-version.outputs.version }}
-      dev_version: true
+      full_build: false
       repo: stormchecker/stormpy
       ref: master
 
