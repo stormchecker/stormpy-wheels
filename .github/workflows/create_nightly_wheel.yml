@@ -52,11 +52,19 @@ jobs:
 
   build-wheels:
     needs: compute-version
+    strategy:
+      matrix:
+        config:
+          - build_type: Release
+            version_suffix: ""
+          - build_type: Debug
+            version_suffix: "+debug"
     uses: stormchecker/stormpy/.github/workflows/create_wheel.yml@master
     with:
       storm_version: master
-      version: ${{ needs.compute-version.outputs.version }}
+      version: ${{ needs.compute-version.outputs.version }}${{ matrix.config.version_suffix }}
       full_build: false
+      build_type: ${{ matrix.config.build_type }}
       repo: stormchecker/stormpy
       ref: master
 
