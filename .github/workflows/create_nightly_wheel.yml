@@ -11,7 +11,7 @@ permissions:
   id-token: write
 
 env:
-  RETENTION_DAYS: 14
+  RETENTION_DAYS: 5
 
 jobs:
   compute-version:
