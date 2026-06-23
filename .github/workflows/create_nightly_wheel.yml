@@ -7,20 +7,16 @@ on:
 
 permissions:
   contents: write  # required to push gh-pages
-  pages: write
-  id-token: write
-
-env:
-  RETENTION_DAYS: 5
 
 jobs:
   compute-version:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      stormpy_sha: ${{ steps.stormpy_sha.outputs.sha }}
     steps:
       - name: Checkout stormpy
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: stormchecker/stormpy
           ref: master
@@ -28,7 +24,9 @@ jobs:
           fetch-depth: 1
           sparse-checkout: |
               lib/stormpy/_version.py
-
+      - name: Get stormpy commit
+        id: stormpy_sha
+        run: echo "sha=$(git -C stormpy-version rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Extract base version
         id: base
         run: |
@@ -50,6 +48,7 @@ jobs:
           echo "Stormpy version: ${{ steps.base.outputs.base_version }}.dev${DATE}"
           echo "version=${{ steps.base.outputs.base_version }}.dev${DATE}" >> "$GITHUB_OUTPUT"
 
+
   build-wheels:
     needs: compute-version
     strategy:
@@ -68,61 +67,110 @@ jobs:
       repo: stormchecker/stormpy
       ref: master
 
-  publish:
-    name: Publish nightly wheels
-    needs: build-wheels
+
+  release:
+    needs: [build-wheels, compute-version]
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
 
     steps:
-      - name: Checkout gh-pages
-        uses: actions/checkout@v6
-        with:
-          ref: gh-pages
-          path: gh-pages
       - name: Download built wheels
         uses: actions/download-artifact@v8
         with:
+          pattern: stormpy-wheels-*
           path: wheelhouse
-      - name: Add new nightly wheels
+          merge-multiple: true
+      - name: Delete existing assets (avoid duplicates)
+        run: |
+          gh release view nightly >/dev/null 2>&1 || \
+            gh release create nightly --prerelease -t "Nightly build"
+          ASSETS=$(gh release view nightly --json assets -q '.assets[].name')
+          for a in $ASSETS; do
+            gh release delete-asset nightly "$a" -y
+          done
+      - name: Upload nightly release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          name: Nightly build
+          body: Automated nightly build from stormchecker/stormpy@${{ needs.compute-version.outputs.stormpy_sha }}
+          prerelease: true
+          files: wheelhouse/*.whl
+
+
+  create-index:
+    name: Create index for nightly wheels
+    needs: release
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+
+    steps:
+      - name: Checkout gh-pages
+        uses: actions/checkout@v7
+        with:
+          ref: gh-pages
+          path: gh-pages
+      - name: Download release asset list
+        id: assets
+        run: |
+          gh release view nightly --json assets -q '.assets[].name' > assets.txt
+          if [ -s assets.txt ]; then
+            echo "has_assets=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_assets=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Generate index
+        if: steps.assets.outputs.has_assets == 'true'
         run: |
           mkdir -p gh-pages/simple/stormpy
-          find wheelhouse -name "*.whl" -exec cp {} gh-pages/simple/stormpy/ \;
-      - name: Prune old nightly wheels (keep last 14 days)
+          echo "<!DOCTYPE html><html><body>" > gh-pages/simple/stormpy/index.html
+          while read file; do
+            case "$file" in *+debug*) continue ;; esac
+            url="https://github.com/${{ github.repository }}/releases/download/nightly/$file"
+            echo "<a href=\"$url\">$file</a><br>" >> gh-pages/simple/stormpy/index.html
+          done < assets.txt
+          echo "</body></html>" >> gh-pages/simple/stormpy/index.html
+      - name: Generate debug index
+        if: steps.assets.outputs.has_assets == 'true'
         run: |
-          python - <<'EOF'
-          from pathlib import Path
-          from datetime import date, timedelta
-          import os
-          import re
-          
-          # Read retention window from GitHub environment variable
-          retention_days = int(os.environ.get("RETENTION_DAYS", "14"))
-          cutoff = date.today() - timedelta(days=retention_days)
-          # Pattern matches .devYYYYMMDD
-          pattern = re.compile(r"\.dev(\d{8})")
-          
-          for p in Path("gh-pages/simple/stormpy").glob("*.whl"):
-              m = pattern.search(p.name)
-              if not m:
-                  continue
-              y, mth, d = int(m.group(1)[:4]), int(m.group(1)[4:6]), int(m.group(1)[6:])
-              if date(y, mth, d) < cutoff:
-                  p.unlink()
+          mkdir -p gh-pages/simple-debug/stormpy
+          echo "<!DOCTYPE html><html><body>" > gh-pages/simple-debug/stormpy/index.html
+          while read file; do
+            case "$file" in *+debug*) ;; *) continue ;; esac
+            url="https://github.com/${{ github.repository }}/releases/download/nightly/$file"
+            echo "<a href=\"$url\">$file</a><br>" >> gh-pages/simple-debug/stormpy/index.html
+          done < assets.txt
+          echo "</body></html>" >> gh-pages/simple-debug/stormpy/index.html
+      - name: Generate root index
+        if: steps.assets.outputs.has_assets == 'true'
+        run: |
+          mkdir -p gh-pages/simple
+          cat <<EOF > gh-pages/simple/index.html
+          <!DOCTYPE html>
+          <html>
+            <body>
+              <a href="stormpy/">stormpy</a>
+            </body>
+          </html>
           EOF
-      - name: Regenerate index
+      - name: Generate debug root index
+        if: steps.assets.outputs.has_assets == 'true'
         run: |
-          python - <<'EOF'
-          from pathlib import Path
-          
-          pkgdir = Path("gh-pages/simple/stormpy")
-          wheels = sorted(p.name for p in pkgdir.glob("*.whl"))
-          with (pkgdir / "index.html").open("w") as f:
-              f.write("<!DOCTYPE html>\n<html><body>\n")
-              for w in wheels:
-                  f.write(f'<a href="{w}">{w}</a><br/>\n')
-              f.write("</body></html>\n")
+          mkdir -p gh-pages/simple-debug
+          cat <<EOF > gh-pages/simple-debug/index.html
+          <!DOCTYPE html>
+          <html>
+            <body>
+              <a href="stormpy/">stormpy (debug)</a>
+            </body>
+          </html>
           EOF
       - name: Deploy to gh-pages
+        if: steps.assets.outputs.has_assets == 'true'
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
