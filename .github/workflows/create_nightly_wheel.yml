@@ -91,7 +91,7 @@ jobs:
             gh release delete-asset nightly "$a" -y
           done
       - name: Upload nightly release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: nightly
           name: Nightly build
