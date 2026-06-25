@@ -45,8 +45,13 @@ jobs:
         id: version
         run: |
           DATE=$(date -u +%Y%m%d)
-          echo "Stormpy version: ${{ steps.base.outputs.base_version }}.dev${DATE}"
-          echo "version=${{ steps.base.outputs.base_version }}.dev${DATE}" >> "$GITHUB_OUTPUT"
+          BASE=${{ steps.base.outputs.base_version }}
+          MAJOR=$(echo "$BASE" | cut -d. -f1)
+          MINOR=$(echo "$BASE" | cut -d. -f2)
+          PATCH=$(echo "$BASE" | cut -d. -f3)
+          NIGHTLY="${MAJOR}.${MINOR}.$((PATCH + 1)).dev${DATE}"
+          echo "Stormpy nightly version: $NIGHTLY"
+          echo "version=$NIGHTLY" >> "$GITHUB_OUTPUT"
 
 
   build-wheels:
